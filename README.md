@@ -81,27 +81,116 @@ working — there is no service identity behind it.
 
 ---
 
-## Setup
+## Install
+
+Requirements: **Node 18+** (for built-in `fetch`) and **pnpm**. A Microsoft
+work/school account that can use Power Automate — nothing more.
 
 ```bash
+git clone https://github.com/karenrebecag/PowerAutomate_MCP.git
+cd PowerAutomate_MCP
 pnpm install
-pnpm login       # one-time device-code sign-in; stores a refresh token (0600)
-pnpm probe       # Phase 0: confirm every endpoint against your tenant
 pnpm build
 ```
 
-Then register it with your MCP client (e.g. Claude Code, `~/.mcp.json`):
+## Credentials — sign in once
+
+There is no config file to edit and no secret to paste. Authentication is an
+interactive **device-code** login against your own Microsoft account:
+
+```bash
+pnpm login
+```
+
+It prints a URL and a short code:
+
+```
+  Power Automate MCP — sign in
+
+  1. Open:  https://microsoft.com/devicelogin
+  2. Code:  ABCD-EFGH
+
+  Waiting for you to finish signing in...
+```
+
+Open the URL, enter the code, sign in with the account whose flows you want to
+manage, and approve. On success a **refresh token** is written to `.pa-token`
+(permissions `0600`, gitignored). The server mints short-lived access tokens
+from it automatically — you won't be asked again until it expires (~90 days of
+inactivity). To switch accounts or recover from an expired token, just re-run
+`pnpm login`.
+
+**Optional environment variables**
+
+| Variable | Default | When to set it |
+| --- | --- | --- |
+| `PA_TENANT_ID` | `organizations` | Pin a specific tenant GUID if your account belongs to several. |
+| `PA_TOKEN_FILE` | `.pa-token` beside the package | Store the refresh token somewhere else. |
+
+## Verify (optional but recommended)
+
+`pnpm probe` runs Phase 0 — it calls every read endpoint against *your* tenant
+and dumps the real responses to `scratch/` (gitignored). If a route 404s on your
+environment you'll see it here rather than mid-use. Nothing it does writes.
+
+```bash
+pnpm probe
+```
+
+## Register with your MCP client
+
+Add the server to your client's config. For Claude Code that's `~/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "power-automate": {
       "command": "node",
-      "args": ["/absolute/path/to/PowerAutomate_mcp/dist/index.js"]
+      "args": ["/absolute/path/to/PowerAutomate_MCP/dist/index.js"]
     }
   }
 }
 ```
+
+Use an **absolute** path to `dist/index.js`. The server finds `.pa-token`
+relative to its own location, so no working directory or env needs to be set in
+the client. Restart the client (or reconnect the server) and the seven tools
+appear. A quick check from the terminal without a client:
+
+```bash
+printf '%s\n%s\n%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  | node dist/index.js
+```
+
+## Tools
+
+| Tool | Writes? | What it does |
+| --- | --- | --- |
+| `list_environments` | no | Every environment the account can see. Start here for the environment ID. |
+| `list_flows` | no | Cloud flows in an environment (summary fields). |
+| `get_flow` | no | Full editable definition + connection references. |
+| `get_flow_runs` | no | Recent run history: status, code, timing. |
+| `get_run_actions` | no | Per-action breakdown of one run; follows inputs/outputs links for failed actions. The debugging view. |
+| `set_flow_state` | **yes** | Start / stop a flow. Previews unless you pass `confirm: true`. |
+| `create_or_update_flow` | **yes** | Create or edit a flow from a definition object. **`dryRun` is the default** — pass `dryRun: false` to actually write. |
+
+### Typical flow
+
+```
+list_environments            → grab the environment ID
+list_flows(environmentId)     → find the flow you want, grab its ID
+get_flow(env, flowId)         → read the definition
+… edit the definition object …
+create_or_update_flow(env, flowId, definition)          → preview (dryRun on)
+create_or_update_flow(env, flowId, definition, dryRun:false)  → apply
+```
+
+Both write tools refuse to mutate anything until you opt in explicitly
+(`dryRun: false` / `confirm: true`). Treat that as a feature, not a nuisance —
+one bad definition can break a live automation.
 
 ## Project layout
 
@@ -118,8 +207,12 @@ scripts/
 
 ## Status
 
-Scaffold + auth + Phase 0 probe are in place. Tools are written against the real
-response shapes the probe captures — see `scratch/` after running `pnpm probe`.
+Working. Seven tools (five read, two write), each typed against the real
+response shapes captured by the Phase 0 probe against a live tenant. `pnpm
+verify` (typecheck + lint + format + tests) is green. `list_connections` is
+deliberately absent from v1 — its route lives under a different provider path
+and was dropped rather than shipped as a guess; connection references are
+visible inside `get_flow` anyway.
 
 ## License & intent
 
