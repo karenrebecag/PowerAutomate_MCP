@@ -5,10 +5,15 @@ inspect and edit your **personal Power Automate cloud flows** — authenticated
 with your own Microsoft account, with no admin consent and no paid subscription.
 
 It exists because the hosted alternatives charge a monthly fee to wrap an API
-that Microsoft already exposes to your account for free. This repo is the
-reverse-engineering writeup of how that API actually works, packaged as a
-working tool. **Personal project, provided as-is** — read the reliability note
-before depending on it.
+that Microsoft already exposes to your account for free — and because the Power
+Automate portal is a poor interface when you would rather **describe the change
+and let an agent apply it under guardrails**. This repo is the reverse-engineering
+writeup of how that API actually works, packaged as a working tool.
+
+**Personal project, provided as-is.** Read the [reliability note](#reliability-note-read-this)
+and [docs/SECURITY.md](docs/SECURITY.md) before depending on it.
+
+Not affiliated with or endorsed by Microsoft.
 
 ---
 
@@ -177,20 +182,47 @@ printf '%s\n%s\n%s\n' \
 | `set_flow_state` | **yes** | Start / stop a flow. Previews unless you pass `confirm: true`. |
 | `create_or_update_flow` | **yes** | Create or edit a flow from a definition object. **`dryRun` is the default** — pass `dryRun: false` to actually write. |
 
-### Typical flow
+### Typical agent workflow
+
+**Inspect / debug a failure**
 
 ```
-list_environments            → grab the environment ID
-list_flows(environmentId)     → find the flow you want, grab its ID
-get_flow(env, flowId)         → read the definition
+list_environments
+list_flows(environmentId)
+get_flow_runs(environmentId, flowId)
+get_run_actions(environmentId, flowId, runName)   → see which action failed
+```
+
+**Change a definition safely**
+
+```
+get_flow(environmentId, flowId)                   → copy properties.definition
 … edit the definition object …
-create_or_update_flow(env, flowId, definition)          → preview (dryRun on)
-create_or_update_flow(env, flowId, definition, dryRun:false)  → apply
+create_or_update_flow(..., dryRun: true)          → default; shows wouldSend
+create_or_update_flow(..., dryRun: false)         → only after explicit OK
 ```
 
 Both write tools refuse to mutate anything until you opt in explicitly
 (`dryRun: false` / `confirm: true`). Treat that as a feature, not a nuisance —
 one bad definition can break a live automation.
+
+### Example conversation (what this is for)
+
+> **You:** Why did "Notify sales on new lead" fail this morning?
+>
+> **Agent:** *(list_environments → list_flows → get_flow_runs → get_run_actions)*
+> The run at 09:14 failed on action `HTTP_To_CRM` with 401. The token connection
+> reference is still present on the flow; the downstream API rejected the call.
+>
+> **You:** Turn the flow off until we fix the connection.
+>
+> **Agent:** *(set_flow_state preview → confirm: true after you approve)*
+> Flow stopped.
+
+You never open the Power Automate designer for that loop. The agent uses the
+same permissions you already have in the portal.
+
+---
 
 ## Project layout
 
@@ -198,25 +230,50 @@ one bad definition can break a live automation.
 src/
   auth/       device-code login + silent refresh (the interesting bit)
   client/     thin HTTP wrapper over the two REST backends
+  core/       shared MCP result helpers
   tools/      one file per MCP tool (added after Phase 0 confirms shapes)
   server.ts   MCP server wiring
   index.ts    stdio transport entry point
 scripts/
   probe-endpoints.ts   Phase 0 reconnaissance — run before trusting any tool
+docs/
+  SECURITY.md          tokens, disk artifacts, blast radius
+  DEVELOPMENT.md       how to extend tools without guessing routes
 ```
+
+## How it was built (spec / probe-driven)
+
+1. **Phase 0** — `pnpm probe` hits read routes on a live tenant and saves real
+   JSON under `scratch/` (gitignored).
+2. Tools are typed and implemented **only** against those shapes.
+3. Routes that 404 or look wrong are **dropped** (e.g. standalone
+   `list_connections` is not in v1; refs still appear on `get_flow`).
+4. Writes ship with **preview defaults** so an agent cannot apply a definition
+   on the first try by accident.
+
+Details: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Status
 
-Working. Seven tools (five read, two write), each typed against the real
-response shapes captured by the Phase 0 probe against a live tenant. `pnpm
-verify` (typecheck + lint + format + tests) is green. `list_connections` is
-deliberately absent from v1 — its route lives under a different provider path
-and was dropped rather than shipped as a guess; connection references are
-visible inside `get_flow` anyway.
+Working. Seven tools (five read, two write), each shaped against responses
+captured by Phase 0 on a live tenant. `pnpm verify` (typecheck + lint + format +
+tests) is the local gate.
+
+**Not in v1:** delete flow, desktop flows, tenant admin APIs, standalone
+connection listing.
+
+## Documentation
+
+| Doc | Contents |
+| --- | --- |
+| [docs/SECURITY.md](docs/SECURITY.md) | Token file, delegated blast radius, what not to commit |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Probe-first workflow, scripts, adding tools |
+| [CLAUDE.md](CLAUDE.md) | Hard rules for coding agents working in this repo |
 
 ## License & intent
 
-Personal, educational reverse-engineering project. Shared so others can learn
-how this API works and build their own personal tooling on top of it. Not
-affiliated with or endorsed by Microsoft. Use within your own account and your
-organization's policies.
+[MIT](LICENSE). Personal, educational reverse-engineering project. Shared so
+others can learn how this API works and build their own personal tooling on top
+of it. Use within your own account and your organization's policies.
+
+Not affiliated with or endorsed by Microsoft.
